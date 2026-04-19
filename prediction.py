@@ -13,7 +13,7 @@ from deep_translator import GoogleTranslator
 from PIL import Image, ImageFont, ImageDraw
 
 # --- Streamlit Page Config ---
-st.set_page_config(page_title="ISL Translator", layout="wide")
+st.set_page_config(page_title="ISL Web Interpreter", layout="wide")
 
 # --- Configuration ---
 MODEL_PATH = 'landmark_model.pth'
@@ -46,7 +46,7 @@ class LandmarkModel(nn.Module):
     def forward(self, x):
         return self.network(x)
 
-# --- Load Resources (Cached so it only loads once) ---
+# --- Load Resources (Cached) ---
 @st.cache_resource
 def load_model_and_labels():
     try:
@@ -126,7 +126,7 @@ class ISLProcessor:
                         current_char = label_map.get(pred_idx.item())
                         confidence = conf.item()
 
-        # Logic & Stability
+        # Logic & Stability Filter
         if current_char:
             if current_char == self.stable_letter:
                 if self.start_time is None: self.start_time = time.time()
@@ -189,25 +189,50 @@ with col1:
     selected_name = st.selectbox("Output Language", list(languages.keys()))
     selected_code = languages[selected_name]
 
+    st.markdown("### Performance")
+    quality = st.radio("Video Quality", ["Low (Best for Mobile)", "Standard (Balanced)", "High (Desktop Only)"], index=1)
+
 with col2:
-    # WebRTC Setup
-    rtc_config = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-    
+    # Twilio TURN Server Integration
+    @st.cache_data
+    def get_ice_servers():
+        try:
+            account_sid = st.secrets["TWILIO_ACCOUNT_SID"]
+            auth_token = st.secrets["TWILIO_AUTH_TOKEN"]
+            from twilio.rest import Client
+            client = Client(account_sid, auth_token)
+            token = client.tokens.create()
+            return token.ice_servers
+        except Exception as e:
+            return [{"urls": ["stun:stun.l.google.com:19302"]}]
+
+    rtc_config = RTCConfiguration({"iceServers": get_ice_servers()})
+
+    # Dynamic Camera Constraints based on User Device
+    if "Low" in quality:
+        vid_constraints = {"width": {"ideal": 320}, "height": {"ideal": 240}, "frameRate": {"ideal": 15, "max": 15}}
+    elif "Standard" in quality:
+        vid_constraints = {"width": {"ideal": 640}, "height": {"ideal": 480}, "frameRate": {"ideal": 20, "max": 24}}
+    else:
+        vid_constraints = {"width": {"ideal": 1280}, "height": {"ideal": 720}, "frameRate": {"ideal": 30}}
+
     ctx = webrtc_streamer(
         key="isl-streamer",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=rtc_config,
         video_processor_factory=ISLProcessor,
-        media_stream_constraints={"video": True, "audio": False},
+        media_stream_constraints={
+            "video": vid_constraints,
+            "audio": False
+        },
         async_processing=True
     )
 
-    # Pass the selected language dynamically to the processor thread
+    # State Sync
     if ctx.video_processor:
         ctx.video_processor.selected_lang_name = selected_name
         ctx.video_processor.selected_lang_code = selected_code
         
-        # Add a clear button that communicates with the processor thread
         if st.button("Clear Text"):
             ctx.video_processor.sentence = ""
             ctx.video_processor.translated_sentence = ""
