@@ -1,0 +1,9 @@
+streamlit
+streamlit-webrtc
+opencv-python-headless
+mediapipe
+torch
+deep-translator
+Pillow
+av
+numpy
